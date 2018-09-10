@@ -1,0 +1,45 @@
+<?php
+
+/**
+ * Implements hook_menu_alter().
+ *
+ * Override the standard Islandora datastream view callback so that we can
+ * enable streaming of optimized pdf files.
+ */
+function hamilton_islandora_fx_menu_alter(&$items) {
+  $custom_info = array(
+    'page callback' => 'hamilton_islandora_fx_islandora_view_datastream',
+    //'file path' => drupal_get_path('module', 'hamilton_islandora_fx'),
+  );
+  $paths = array(
+    'islandora/object/%islandora_object/datastream/%islandora_datastream',
+    'islandora/object/%islandora_object/datastream/%islandora_datastream/version/%/view',
+  );
+  foreach($paths as $path) {
+    if(!empty($items[$path])) {
+      $items[$path] = array_merge($items[$path], $custom_info);
+    }
+  }
+}
+
+/**
+ * Override for Islandora's datastream view page callback to permit fast web view for PDFs.
+ *
+ * Check to see if the datastream has been tagged as stream-able. If so,
+ * add 'Accept-Ranges: bytes' to the header.
+ *
+ * @param \AbstractDatastream $datastream
+ * @param bool                $download
+ * @param null                $version
+ */
+function hamilton_islandora_fx_islandora_view_datastream(AbstractDatastream $datastream, $download = FALSE, $version = NULL) {
+  // It seems to be safe to always have this enabled.
+  // We're doing it so that fast-web-view pdf files will work.
+
+  module_load_include('inc', 'islandora', 'includes/datastream');
+
+  header('Accept-Ranges: bytes');
+
+  // Carry on, Islandora.
+  islandora_view_datastream($datastream, $download, $version);
+}

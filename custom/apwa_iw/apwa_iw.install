@@ -1,0 +1,28 @@
+<?php
+
+/**
+ * Installation coincides with moving several modules from sites/all to the multisite
+ * directory.
+ */
+function apwa_iw_install() {
+  // This rebuilds the module and theme registry, so it picks up
+  // the new location for the garland_apw theme and islandora_webform modules.
+  drupal_flush_all_caches();
+
+}
+
+/**
+ * Rebuild system registry to recognize new module and theme locations; Enable a few new modules.
+ */
+function apwa_iw_update_7001() {
+
+  apwa_iw_install();
+  $sys_enables = array(
+    'entityreference',
+    'inline_entity_form',
+    'views_bulk_operations',
+    'webform_workflow',
+  );
+
+  module_enable($sys_enables);
+}

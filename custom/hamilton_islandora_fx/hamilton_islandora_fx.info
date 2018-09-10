@@ -1,0 +1,7 @@
+name = Hamilton College Islandora FX
+description = Local custom functions to alter the default behavior of Drupal and Islandora
+package = Hamilton
+core = 7.x
+files[] = hamilton_islandora_fx.module
+dependencies[] = islandora
+

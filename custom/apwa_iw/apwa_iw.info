@@ -1,0 +1,27 @@
+name = APWA Islandora Webform Integration
+core = 7.x
+package = APWA
+dependencies[] = entityreference
+dependencies[] = features
+dependencies[] = inline_entity_form
+dependencies[] = list
+dependencies[] = options
+dependendies[] = views_bulk_operations
+dependendies[] = webform_workflow
+dependendies[] = islandora_webform
+dependendies[] = islandora_webform_ingest
+dependencies[] = webform_ajax
+
+features[ctools][] = apwa_iw:apwa_iw.features:1
+features[features_api][] = api:2
+features[field_base][] = webform_workflow_states
+features[field_base][] = ww_state_notify_os
+features[field_base][] = ww_state_notify_users
+features[field_instance][] = node-webform-webform_workflow_states
+features[field_instance][] = webform_workflow_state-webform_workflow_state-ww_state_notify_os
+features[field_instance][] = webform_workflow_state-webform_workflow_state-ww_state_notify_users
+features[node][] = webform
+features[webform_workflow_state][] = 1
+features[webform_workflow_state][] = 2
+features[webform_workflow_state][] = 3
+features[webform_workflow_state][] = 4

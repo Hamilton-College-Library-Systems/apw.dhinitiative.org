@@ -1,0 +1,446 @@
+<?php
+/**
+ * @file
+ * Code for the APWA Islandora Webform Integration feature.
+ */
+
+include_once 'apwa_iw.features.inc';
+
+include_once 'includes/apwa_iw.workflow_feature.inc';
+
+define('APWA_INLINE_WEBFORM_DOM_ID', 'apwa_inline_webform_target');
+
+
+/**
+ * Include TRANSCRIPT in IWI target datastreams.
+ *
+ * return an array with a minimum of 'dsid' and 'mime' values.
+ */
+/**
+ * Implements hook_iwi_ingestible_datastreams_alter().
+ */
+function apwa_iw_iwi_ingestible_datastreams_alter(&$datastreams, $object, $mimetypes) {
+  $datastreams['TRANSCRIPT_WF (text/plain)'] = array(
+    'dsid' => 'TRANSCRIPT_WF',
+    'mime' => 'text/plain',
+  );
+}
+
+/**
+ * Implements hook_islandora_webform_theme_webform_links_alter().
+ */
+function apwa_iw_islandora_theme_webform_links_alter(&$render, $alter_data) {
+  global $user;
+  $transcript_ds = apwa_iw_get_transcription_ds($alter_data['islandora_object']);
+  $jqids = element_children($render);
+  $pid = $alter_data['islandora_object']->id;
+
+  // There's an assumption here that having any kind of transcription datastream
+  // means we should not show the transcribe link.
+  if(empty($transcript_ds)) {
+    $signup_count = 0;
+    foreach($jqids as $jqid) {
+      if($jqid != 'inline-webform-target' && empty($render[$jqid]['#entity']->webform['status'])) {
+        unset ($render[$jqid]);
+        continue;
+      }
+      if($jqid != 'inline-webform-target') {
+        $node = $render[$jqid]['#entity'];
+        $webform_link_indexes = empty($render[$jqid]['webform-links']) ? array() : element_children($render[$jqid]['webform-links']);
+        if (!empty($webform_link_indexes)) {
+          $submissions = !empty($render[$jqid]['#submissions']) ? $render[$jqid]['#submissions'] : array();
+          $state_counts = array('is draft' => array('total' => 0, 'by-user' => 0));
+          foreach($submissions as $sid => $submission) {
+            if(!empty($submission->is_draft)) {
+              $state_counts['is draft']['total'] += 1;
+              if($user->uid && $submission->uid == $user->uid) {
+                $state_counts['is draft']['by-user'] += 1;
+              }
+            }
+            if(!empty($submission->_webform_workflow_state->wsid)) {
+              $ws = $submission->_webform_workflow_state;
+              $state_counts[$ws->wsid]['total'] = 1 + (empty($state_counts[$ws->wsid]['total']) ? 0 : $state_counts[$ws->wsid]['total']);
+              if($user->uid && $submission->uid == $user->uid) {
+                $state_counts[$ws->wsid]['by-user'] = 1 + (empty($state_counts[$ws->wsid]['by-user']) ? 0 : $state_counts[$ws->wsid]['by-user']);
+              }
+            }
+          }
+        }
+        else {
+            if(!$signup_count && user_is_anonymous() && in_array(2, $node->webform['roles']) && !islandora_webform_submission_total_limit_check($node, $pid)) {
+              $signup_count += 1;
+              $render[$jqid]['webform-links']['sign-up'] = array(
+                '#theme' => 'link',
+                '#text' => t('Help transcribe this.'),
+                '#path' => variable_get('apwa_signup_webform_path', '/'),
+                '#options' => array(
+                  'attributes' => array(
+                    'class' => array(
+                      'transcriber-sign-up'
+                    ),
+                    'title' => t('Log in or request an account to join our transcription team.')
+                  ),
+                  'html' => FALSE,
+                  'query' => drupal_get_destination(),
+                ),
+              );
+            }
+          }
+      }
+    }
+
+    module_load_include('inc', 'apwa_iw', 'includes/webform_link_states');
+    module_load_include('inc', 'apwa_iw', 'includes/convert_number_to_words');
+    $show_states = apwa_iw_webform_link_states();
+    foreach($show_states as $wsid => $show_state) {
+      if(!empty($state_counts[$wsid]['total'])) {
+        $label = format_plural($state_counts[$wsid]['total'], '!countwords !single', '!countwords !plural', array('!single' => $show_state['link-text-single'], '!countwords' => convert_number_to_words($state_counts[$wsid]['total']), '!plural' => $show_state['link-text-plural']));
+        if(!empty($state_counts[$wsid]['by-user'])) {
+          $label .= t(' (which includes !count by you)', array('!count' => strtolower(convert_number_to_words($state_counts[$wsid]['by-user']))));
+        }
+        $render[$jqid]['webform-links'][$pid][] = array(
+          '#type' => 'container',
+          '#attributes' => array(
+            'class' => array(
+              'webform-state-label',
+              drupal_html_class('wsid-' . $wsid),
+            ),
+          ),
+          array('#markup' => $label),
+        );
+      }
+    }
+  }
+  else {
+    // We have a transcription datastream. Remove webform links but keep
+    // the webform target div so we can fill it with the transcription.
+    foreach($jqids as $jqid) {
+      if($jqid != 'inline-webform-target') {
+        unset($render[$jqid]);
+      }
+    }
+    // Add the transcription link element. The link itself is populated in
+    // transcript.js, with the settings populated in /includes/object_display.inc
+    $render['transcript-link'] = array(
+      '#type' => 'container',
+      '#attributes' => array(
+        'id' => 'transcript_link',
+        'class' => array(
+          'transcript-link',
+          'webform-links-wrapper',
+        ),
+      ),
+      array('#markup' => t('View transcription')),
+    );
+  }
+}
+
+/**
+ * Implements hook_islandora_webform_theme_webform_link_alter().
+ */
+function apwa_iw_islandora_webform_theme_webform_link_alter(&$webform_link, $islandora_webform_record, $pid, $sid) {
+//  $signup_count = &drupal_static(__FUNCTION__ . '-signup-count');
+  global $user;
+  if(empty(element_children($webform_link))) {
+    // If we have a submission, check to see if it is by the current user.
+    // If so, present a link to edit it.
+    if (!empty($sid)) {
+      $submission = webform_get_submission($islandora_webform_record->entity_id, $sid);
+      if($submission->uid == $user->uid) {
+        // Force replacement of the webform link if there is an existing draft submission by this user.
+        module_load_include('inc', 'islandora_webform', 'theme/theme.inc');
+        $class = array('webform-link');
+        if ($islandora_webform_record->link_mode == 'inline') {
+          $class[] = 'use-ajax';
+        }
+        $webform_link_options = array(
+          'html' => TRUE,
+          'query' => array(
+            'pid' => $pid,
+          ),
+          'attributes' => array(
+            'class' => $class,
+          ),
+        );
+        // To avoid recursion, set $alter = FALSE!
+        $webform_link = islandora_webform_theme_webform_link($islandora_webform_record, $webform_link_options, $pid, $islandora_webform_record->link_mode, $sid, $alter = FALSE, $force = TRUE);
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_iw_inline_webform_ajax_commands_alter().
+ *
+ * Target the inline islandora webform to a new location.
+ */
+function apwa_iw_iw_inline_webform_ajax_commands_alter(&$commands, $vars) {
+  $target = '#' . APWA_INLINE_WEBFORM_DOM_ID;
+  $commands['remove-container'] = ajax_command_remove($target .  ' > *');
+  // Set css on webform links wrapper.
+  $commands['remove-wrapper-class'] = ajax_command_invoke('.webform-links-wrapper', 'removeClass', array('opened'));
+  $commands['add-wrapper-class'] = ajax_command_invoke('#iw_webform_links_' . $vars['webform']->nid . '.webform-links-wrapper', 'addClass', array('opened'));
+  $commands['remove-object-display-wrapper-class'] = ajax_command_invoke('#islandora_object_display_wrapper', 'removeClass', array('display-webform'));
+  $commands['add-object-display-wrapper-class'] = ajax_command_invoke('#islandora_object_display_wrapper', 'addClass', array('display-webform'));
+
+  // Target a different div for the inline webform.
+  $commands['jquery-selector'] = ajax_command_append($target, $vars['html']);
+}
+
+/**
+ * Implements hook_library().
+ */
+function apwa_iw_library() {
+  $libraries['drag-resize'] = array(
+    'title' => 'JQuery UI Drag and Resize',
+    'website' => 'http://jqueryui.com/download/#!version=1.12.1&components=101100000100101000000000010000000000000000000000',
+    'version' => '1.2',
+    'js' => array(
+      drupal_get_path('module', 'apwa_iw') . '/libraries/jquery-ui-1.12.1.drag-resize/jquery-ui.min.js' => array(),
+    ),
+    'css' => array(
+      drupal_get_path('module', 'apwa_iw') . '/libraries/jquery-ui-1.12.1.drag-resize/jquery-ui.min.css' => array(
+        'type' => 'file',
+        'media' => 'screen',
+      ),
+      drupal_get_path('module', 'apwa_iw') . '/libraries/jquery-ui-1.12.1.drag-resize/jquery-ui..structure.min.css' => array(
+        'type' => 'file',
+        'media' => 'screen',
+      ),
+      drupal_get_path('module', 'apwa_iw') . '/libraries/jquery-ui-1.12.1.drag-resize/jquery-ui.theme.min.css' => array(
+        'type' => 'file',
+        'media' => 'screen',
+      ),
+    ),
+  );
+  return $libraries;
+}
+
+
+/**
+ * Implements hook_process_template for each known content model.
+ *
+ * @TODO: Is there some way to do this dynamically?
+ */
+function apwa_iw_process_islandora_default(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_object_print(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_object_print_object(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_audio(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_book_book(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+  if(!empty($vars['viewer'])) {
+    $vars['islandora_content'] = $vars['viewer'];
+  }
+}
+function apwa_iw_process_islandora_book_page(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_disk_image(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_person(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_dept(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_basic_image(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_basic_image_print(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_large_image(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_large_image_print(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_newspaper(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_newspaper_issue(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_newspaper_page(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_pdf(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_pdf_print(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_video(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_web_archive(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+function apwa_iw_process_islandora_videojs(&$vars) {
+  module_load_include('inc', 'apwa_iw', 'includes/object_display');
+  apwa_iw_process_all_object_view($vars);
+}
+
+
+/**
+ * Implements hook_menu().
+ */
+function apwa_iw_menu() {
+  return array(
+    'islandora/object/%islandora_object/apwa_transcript/%' => array(
+      'title' => 'Transcription',
+      'type' => MENU_NORMAL_ITEM,
+      'page callback' => 'islandora_transcript_view',
+      'page arguments' => array(2,4),
+      'access callback' => 'islandora_transcript_access_callback',
+      'access arguments' => array(2),
+      'file' => 'includes/utilities.inc',
+    ),
+    'islandora/object/%islandora_object/apwa_transcript/%/getajax' => array(
+      'type' => MENU_CALLBACK,
+      'page callback' => 'apwa_transcript_getajax',
+      'page arguments' => array(2,4),
+      'access callback' => 'apwa_transcript_access_callback',
+      'access arguments' => array(2,4),
+      'file' => 'includes/utilities.inc',
+      'delivery callback' => 'apwa_transcript_ajax_callback',  // Magic goes here.
+    ),
+  );
+}
+
+/**
+ * Loop through possible transcription datastreams. Return DSID
+ * of the first found and accessible on this object.
+ *
+ * @param $islandora_object
+ *
+ * @return string|null
+ */
+function apwa_iw_get_transcription_ds($islandora_object) {
+  $transcript_datastream_fetched = &drupal_static(__FUNCTION__ . '_' . $islandora_object->id . "_fetched");
+  if(!isset($transcript_datastream_fetched)) {
+    $transcript_datastreams = array(
+      'TRANSCRIPT_WF',
+      'TRANSCRIPT',
+      'FULL_TEXT',
+      'OCR',
+    );
+    foreach($transcript_datastreams as $transcript_datastream) {
+      if (isset($islandora_object[$transcript_datastream]) && islandora_datastream_access(ISLANDORA_VIEW_OBJECTS, $islandora_object[$transcript_datastream])) {
+        $transcript_datastream_fetched = $transcript_datastream;
+        break;
+      }
+    }
+  }
+  return $transcript_datastream_fetched;
+}
+
+/**
+ * Access callback.
+ *
+ * Requires that the given object contains a $ds datastream (and to be
+ * viewable, as per the stock permissions).
+ *
+ * @param AbstractObject $object
+ *   The object to test, if NULL the given object doesn't exist or is
+ *   inaccessible.
+ * @param string $ds
+ *   The datastream ID.
+ *
+ * @return bool
+ *   TRUE if the user is allowed to access the transcript datastream, FALSE
+ *   otherwise.
+ */
+function apwa_transcript_access_callback($object, $ds) {
+  return is_object($object) && isset($object[$ds]) && islandora_datastream_access(ISLANDORA_VIEW_OBJECTS, $object[$ds]);
+}
+
+/**
+ * Implements hook_webform_submission_update().
+ */
+function apwa_iw_webform_submission_update($node, $submission) {
+  // Trigger default state transition when draft is completed.
+  if (
+    webform_workflow_is_enabled($node)
+    && !$submission->is_draft
+    && !empty($node->webform_workflow->data['new_gets_first_state'])
+    && !empty($submission->original->is_draft)
+  ) {
+    $state = webform_workflow_state_get_default($node);
+    if (!$state) {
+      return;
+    }
+    $notify = !empty($node->webform_workflow->data['new_triggers_notification']);
+    webform_workflow_transition($submission, $state, t('Set automatically on change from draft to completed'), NULL, $notify, FALSE);
+  }
+}
+
+/**
+ * Implements hook_islandora_webform_object_submission_query_count_alter().
+ */
+function apwa_iw_islandora_webform_object_submission_query_count_alter(&$query, $params) {
+  /*
+   * Add count of submissions in draft across all objects.
+   * This limits the number of draft submissions for any object targeted by
+   * the webform identified in $params['nid'].
+   */
+  if (!empty($params['uid'])) {
+    $all_draft_query = db_select('webform_submissions', 's')
+      ->distinct()
+      ->fields('s', array('sid', 'is_draft'));
+    $all_draft_query->condition('s.is_draft', 1);
+    if (!empty($params['nid'])) {
+      $all_draft_query->condition('s.nid', $params['nid']);
+    }
+    $all_draft_query->condition('s.uid', $params['uid']);
+
+    $query->union($all_draft_query, 'DISTINCT');
+  }
+}
+
+/**
+ * Implements hook_islandora_webform_submission_ingested().
+ *
+ * Set webform workflow state of submission to "ingested", if possible.
+ */
+function apwa_iw_islandora_webform_submission_ingested($submission, $object) {
+  if (module_exists('webform_workflow')) {
+    $node = node_load($submission->nid);
+    $states = webform_workflow_get_available_states($node);
+    foreach($states as $state) {
+      if (trim(strtolower($state->label)) == 'ingested') {
+        webform_workflow_transition($submission, $state);
+        break;
+      }
+    }
+  }
+}
